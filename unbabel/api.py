@@ -392,7 +392,7 @@ class UnbabelApi(object):
         else:
             result = self.api_call('translation/')
         if result.status_code == 200:
-            translations_json = json.loads(result.content)["objects"]
+            translations_json = result.json()["objects"]
             translations = [Translation(**tj) for tj in translations_json]
         else:
             log.critical('Error status when fetching translation from server: {}!'.format(
