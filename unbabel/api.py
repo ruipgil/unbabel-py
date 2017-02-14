@@ -281,11 +281,11 @@ class UnbabelApi(object):
                               origin = None,
                               client_owner_email=None):
         # Collect args
-        data = {k: v for k, v in locals().iteritems() if not v in (self, None)}
+        data = {k: v for k, v in locals().items() if not v in (self, None)}
 
         result = requests.post("%smt_translation/"% self.api_url, headers=self.headers, data=json.dumps(data))
         if result.status_code in (201, 202):
-            json_object = json.loads(result.content)
+            json_object = result.json()
             toret = self._build_mt_translation_object(json_object)
             return toret
         elif result.status_code == 401:
@@ -478,7 +478,7 @@ class UnbabelApi(object):
                                            name=lang_json["lang_pair"][
                                                "target_language"]["name"])
             ) for lang_json in langs_json["objects"]]
-        except Exception, e:
+        except Exception:
             log.exception("Error decoding get language pairs")
             raise e
         return languages
