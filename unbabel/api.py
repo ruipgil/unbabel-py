@@ -449,7 +449,7 @@ class UnbabelApi(object):
         '''
         result = self.api_call('mt_translation/{}/'.format(uid))
         if result.status_code == 200:
-            translation = Translation(**json.loads(result.content))
+            translation = Translation(**result.json())
         else:
             log.critical('Error status when fetching machine translation from server: {}!'.format(
                          result.status_code))

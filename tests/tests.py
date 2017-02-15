@@ -1,215 +1,534 @@
-# -*- coding: utf-8 -*-
 '''
-Created on Jan 3, 2014
+Created on Dec 13, 2013
 
 @author: joaograca
 '''
+import json
+import logging
 import os
-import unittest
-import uuid
-
-from unbabel.api import (UnbabelApi, Order, LangPair, Tone, Topic,
-                         Translation, Account, Job, BadRequestException)
-
-class TestUnbabelAPI(unittest.TestCase):
-    UNBABEL_TEST_USERNAME = os.environ.get('UNBABEL_TEST_USERNAME')
-    UNBABEL_TEST_API_KEY = os.environ.get('UNBABEL_TEST_API_KEY')
-    UNBABEL_TEST_API_URL = os.environ.get('UNBABEL_TEST_API_URL')
-
-    @property
-    def api(self):
-        if not hasattr(self, '_api'):
-            self._api = UnbabelApi(username = self.UNBABEL_TEST_USERNAME,
-                                   api_key = self.UNBABEL_TEST_API_KEY,
-                                   sandbox = True)
-            self._api.api_url = self.UNBABEL_TEST_API_URL
-        return self._api
-
-    def test_api_get_language_pairs(self):
-        pairs = self.api.get_language_pairs()
-
-        self.assertIsInstance(pairs, list, 'Got something that is not a list')
-        self.assertGreater(len(pairs), 0, 'Got 0 pairs')
-        self.assertTrue(
-            reduce(lambda x, y: x and y,
-                   [isinstance(p, LangPair) for p in pairs]),
-            'The pairs are not all instance of LangPair')
-
-    def test_api_get_available_tones(self):
-        tones = self.api.get_tones()
-
-        self.assertIsInstance(tones, list, 'Got something that is not a list')
-        self.assertGreater(len(tones), 0, 'Got 0 tones')
-        self.assertTrue(
-            reduce(lambda x, y: x and y,
-                   [isinstance(t, Tone) for t in tones]),
-            'The tones are not all instance of Tone')
-
-    def test_api_get_topics(self):
-        topics = self.api.get_topics()
-
-        self.assertIsInstance(topics, list, 'Got something that is not a list')
-        self.assertGreater(len(topics), 0, 'Got 0 topics')
-        self.assertTrue(
-            reduce(lambda x, y: x and y,
-                   [isinstance(t, Topic) for t in topics]),
-            'The topics are not all instance of Topic')
-
-    def test_api_post_translation(self):
-        data = {
-            'text': "This is a test translation",
-            'source_language': 'en',
-            'target_language': 'pt',
-        }
-        account = self.api.get_account()
-        translation = self.api.post_translations(**data)
-        self.assertIsInstance(translation, Translation,
-                         'Should get a Translation instance')
-        self.assertIsNotNone(translation.uid, 'Did not get a uid')
-        self.assertGreater(translation.price, 0, 'Price is not greater than 0')
-        self.assertEqual(translation.source_language, 'en',
-                         'Source language is not en but %s'%translation.source_language)
-        self.assertEqual(translation.target_language, 'pt',
-                         'Target language is not pt but %s'%translation.target_language)
-        self.assertEqual(translation.text, data['text'])
-        self.assertEqual(translation.status, 'New', 'Wrong status: [{}]'.format(translation.status))
-        self.assertIsNone(translation.topics, 'Topics is not None')
-        self.assertIsInstance(translation.translators, list,
-                              'Translators is not a list')
-        self.assertIsNone(translation.translation, 'Got a translation')
-
-        account2 = self.api.get_account()
-        self.assertEqual(account.balance, account2.balance + translation.price,
-                         "Balance inconsistency after post translation")
-
-        trans = self.api.get_translation(translation.uid)
-        self.assertEqual(translation.uid, trans.uid, 'uids not equal')
-        self.assertEqual(translation.source_language, trans.source_language,
-                         'source language not equal')
-        self.assertEqual(translation.source_language, trans.source_language,
-                         'target language not equal')
-        self.assertEqual(translation.price, trans.price, 'price not equal')
-        self.assertEqual(translation.text, trans.text, 'text not equal')
+import requests
 
 
-    def test_api_get_account(self):
-        account = self.api.get_account()
-        self.assertIsInstance(account, Account,
-                              'Should be an Account instance')
-        self.assertIsInstance(account.username, unicode,
-                              'Username is not unicode')
-        self.assertEqual(account.username, self.UNBABEL_TEST_USERNAME,
-                         'Wrong username')
-        self.assertIsInstance(account.balance, float, 'Balance is not float')
-        self.assertIsInstance(account.email, unicode, 'Email is not unicode')
+log = logging.getLogger()
+import copy
 
-    def test_api_get_translations(self):
-        data = {
-            'text': "This is a test translation",
-            'source_language': 'en',
-            'target_language': 'pt',
-        }
-        self.api.post_translations(**data)
-        translations = self.api.get_translations()
-        self.assertIsInstance(translations, list,
-            'Translations is not a list!')
-        self.assertTrue(len(translations) > 0,
-            'Translations list is empty!')
-        self.assertTrue(all(isinstance(t, Translation) for t in translations),
-            'Items are not all instance of Translation')
 
-    def test_order_post(self):
-        order = self.api.post_order()
-        self.assertIsInstance(order, Order, 'Result is not an Order')
-        self.assertIsNotNone(order.id, 'ID is None')
-        self.assertEqual(order.price, 0, 'Price is not 0')
+UNBABEL_SANDBOX_API_URL = os.environ.get('UNBABEL_SANDOX_API_URL',
+                                         "http://sandbox.unbabel.com/tapi/v2/")
+UNBABEL_API_URL = os.environ.get('UNBABEL_API_URL',
+                                 "https://unbabel.com/tapi/v2/")
 
-    def test_job_add_job_to_order(self):
-        order = self.api.post_order()
 
-        data = {
-            'order_id': order.id,
-            'text': "This is a test translation",
-            'source_language': 'en',
-            'target_language': 'pt',
-        }
+class UnauthorizedException(Exception):
+    def __init__(self, value):
+        self.value = value
 
-        job = self.api.post_job(**data)
-        self.assertIsInstance(job, Job)
-        self.assertEqual(job.order_id, order.id, 'Order ID is not equal')
-        self.assertEqual(job.text, data['text'], 'Job text is not correct')
-        self.assertEqual(job.source_language, data['source_language'],
-                         'Job source_language is not correct')
-        self.assertEqual(job.target_language, data['target_language'],
-                         'Job target_language is not correct')
+    def __str__(self):
+        return repr(self.value)
 
-    def test_job_fail_mandatory_fields(self):
-        self.assertRaises(BadRequestException, self.api.post_job, 0, '', '', '')
 
-    def test_api_unauthorized_call(self):
-        api = self.api
-        self._api = UnbabelApi(username='fake_username',
-                               api_key='fake_api_key')
+class BadRequestException(Exception):
+    def __init__(self, value):
+        self.value = value
 
-        pairs = self.api.get_language_pairs()
-        self.assertIsInstance(pairs, list, 'Got something that is not a list')
+    def __str__(self):
+        return repr(self.value)
 
-        self._api = api
 
-    def test_job_add_job_to_order_all_params(self):
-        order = self.api.post_order()
+class Language(object):
+    def __init__(self, shortname, name):
+        self.shortname = shortname
+        self.name = name
 
-        data = {
-            'order_id': order.id,
-            'uid': uuid.uuid4().hex,
-            'text': "This is a test translation",
-            'source_language': 'en',
-            'target_language': 'pt',
-            'target_text': u"Isto é uma tradução de teste",
-            'text_format': 'text',
-            'tone': 'Informal',
-            'topic': ['startups', 'tech'],
-            'visibility': 'private',
-            'instructions': "Ok people, there's nothing to see here. go home!",
-            'public_url': 'http://google.com',
-            'callback_url': 'http://dev.unbabel.com/',
-            'job_type': 'paid',
-        }
+    def __repr__(self):
+        return self.name
 
-        job = self.api.post_job(**data)
-        self.assertIsInstance(job, Job)
-        self.assertEqual(job.order_id, order.id, 'Order ID is not equal')
-        self.assertEqual(job.text, data['text'], 'Job text is not correct')
-        self.assertEqual(job.source_language, data['source_language'],
-                         'Job source_language is not correct')
-        self.assertEqual(job.target_language, data['target_language'],
-                         'Job target_language is not correct')
+    def __str__(self):
+        return self.name
 
-    def test_job_no_balance(self):
-        self.UNBABEL_TEST_USERNAME="gracaninja-1"
-        self.UNBABEL_TEST_API_KEY="d004dd5659e177d11ef9c22798b767a264f74b17"
-        if hasattr(self, '_api'): delattr(self, '_api')
 
-        data = {
-            'text': "This is a test translation",
-            'source_language': 'en',
-            'target_language': 'pt',
-            'ttype': 'paid'
-        }
+class Tone(object):
+    def __init__(self, description, name):
+        self.description = description
+        self.name = name
 
-        self.assertEqual(self.api.username,"gracaninja-1","API Username not correct %s"%self.api.username)
-        self.assertEqual(self.api.api_key,"d004dd5659e177d11ef9c22798b767a264f74b17","API key not correct %s"%self.api.api_key)
+    def __repr__(self):
+        return self.name
 
-        translation = self.api.post_translations(**data)
-        self.assertEqual(translation.status, "insufficient_balance", 'Job status not insufficient_balance but %s'%translation.status)
+    def __str__(self):
+        return self.name
 
-        self.UNBABEL_TEST_USERNAME = os.environ.get('UNBABEL_TEST_USERNAME')
-        self.UNBABEL_TEST_API_KEY = os.environ.get('UNBABEL_TEST_API_KEY')
-        if hasattr(self, '_api'): delattr(self, '_api')
 
-    def test_pay_order(self):
-        order = self.api.post_order()
-        self.assertTrue(self.api.pay_order(order.id))
+class Topic(object):
+    def __init__(self, name):
+        self.name = name
 
-if __name__ == "__main__":
-     unittest.main()
+    def __repr__(self):
+        return self.name
+
+    def __str__(self):
+        return self.name
+
+
+class LangPair(object):
+    def __init__(self, source_language, target_language):
+        self.source_language = source_language
+        self.target_language = target_language
+
+    def __repr__(self):
+        return "%s_%s" % (
+            self.source_language.shortname, self.target_language.shortname)
+
+    def __str__(self):
+        return "%s_%s" % (
+            self.source_language.shortname, self.target_language.shortname)
+
+
+class Translator(object):
+    def __init__(self, first_name="", last_name="", picture_url="",
+                 profile_url=""):
+        self.first_name = first_name
+        self.last_name = last_name
+        self.picture_url = picture_url
+        self.profile_url = profile_url
+
+    @classmethod
+    def from_json(cls, json):
+        t = Translator(json["first_name"], json["last_name"],
+                       json["picture_url"], json["profile_url"])
+        return t
+
+
+class Translation(object):
+    def __init__(
+        self,
+        uid = -1,
+        text = "",
+        translatedText = None,
+        target_language = "",
+        source_language = None,
+        status = None,
+        translators = [],
+        topics = None,
+        price = None,
+        text_format = 'text',
+        origin = None,
+        price_plan = None,
+        balance = None,
+        client=None):
+        self.uid = uid
+        self.text = text
+        self.translation = translatedText
+        self.source_language = source_language
+        self.target_language = target_language
+        self.status = status
+        self.translators = translators
+        self.topics = topics
+        self.price = price
+        self.text_format = text_format
+        self.origin = origin
+        self.price_plan = price_plan
+        self.client = client
+        self.balance = balance
+
+    def __repr__(self):
+        return "%s %s %s_%s" % (
+            self.uid, self.status, self.source_language, self.target_language)
+
+    def __str__(self):
+        return "%s %s %s_%s" % (
+            self.uid, self.status, self.source_language, self.target_language)
+
+
+class MTTranslation(object):
+    def __init__(
+        self,
+        uid = -1,
+        text = "",
+        translatedText = None,
+        target_language = "",
+        source_language = None,
+        status = None,
+        topics = None,
+        text_format = 'text',
+        origin = None,
+        client=None):
+        self.uid = uid
+        self.text = text
+        self.translation = translatedText
+        self.source_language = source_language
+        self.target_language = target_language
+        self.status = status
+        self.topics = topics
+        self.text_format = text_format
+        self.origin = origin
+        self.client = client
+
+    def __repr__(self):
+        return "%s %s %s_%s" % (
+            self.uid, self.status, self.source_language, self.target_language)
+
+    def __str__(self):
+        return "%s %s %s_%s" % (
+            self.uid, self.status, self.source_language, self.target_language)
+
+
+
+class Account(object):
+    def __init__(self, username, email, balance):
+        self.username = username
+        self.email = email
+        self.balance = balance
+
+    def __unicode__(self):
+        return u'email: {email}, balance: {balance}'.format(
+            email=self.email, balance=self.balance,
+        )
+
+
+class Job(object):
+    def __init__(self, id, uid, order_id, status, source_language, target_language,
+                 text, price, tone, text_format):
+        self.id = id
+        self.uid = uid
+        self.order_id = order_id
+        self.status = status
+        self.text = text
+        self.price = price
+        self.source_language = source_language
+        self.target_language = target_language
+        self.tone = tone
+        self.text_format = text_format
+
+    def __unicode__(self):
+        return u'order_id: {}, id: {}, status: {}'.format(
+            self.order_id, self.id, self.status)
+
+
+class Order(object):
+    def __init__(self, id, status, price):
+        self.id = id
+        self.status = status
+        self.price = price
+
+    def __unicode__(self):
+        return u'{id} - {status} - {price}'.format(
+            id=self.id,
+            status=self.status,
+            price=self.price,
+        )
+
+
+class UnbabelApi(object):
+    def __init__(self, username, api_key, sandbox=False):
+        if sandbox:
+            api_url = UNBABEL_SANDBOX_API_URL
+        else:
+            api_url = UNBABEL_API_URL
+        self.username = username
+        self.api_key = api_key
+        self.api_url = api_url
+        self.is_bulk = False
+        self.headers = {
+            'Authorization': 'ApiKey {}:{}'.format(self.username, self.api_key),
+            'content-type': 'application/json'}
+
+    def api_call(self, uri, data=None, internal_api_call=False):
+        api_url = self.api_url
+        if internal_api_call:
+            api_url = api_url.replace('/tapi/v2/', '/api/v1/')
+        url = "{}{}".format(api_url, uri)
+        if data is None:
+            return requests.get(url, headers=self.headers)
+        return requests.post(url, headers=self.headers, data=json.dumps(data))
+
+    def post_translations(self,
+                          text,
+                          target_language,
+                          source_language=None,
+                          type=None,
+                          tone=None,
+                          visibility=None,
+                          public_url=None,
+                          callback_url = None,
+                          topics = None,
+                          instructions=None,
+                          uid=None,
+                          text_format="text",
+                          target_text=None,
+                          origin = None,
+                          client_owner_email=None,
+                          ):
+        ## Collect args
+        data = {k: v for k, v in locals().items() if not v in (self, None)}
+
+        if self.is_bulk:
+            self.bulk_data.append(data)
+            return
+
+        return self._make_request(data)
+
+    def post_mt_translations(self,
+                              text,
+                              target_language,
+                              source_language=None,
+                              tone=None,
+                              callback_url = None,
+                              topics = None,
+                              instructions=None,
+                              uid=None,
+                              text_format="text",
+                              origin = None,
+                              client_owner_email=None):
+        # Collect args
+        data = {k: v for k, v in locals().items() if not v in (self, None)}
+
+        result = requests.post("%smt_translation/"% self.api_url, headers=self.headers, data=json.dumps(data))
+        if result.status_code in (201, 202):
+            json_object = result.json()
+            toret = self._build_mt_translation_object(json_object)
+            return toret
+        elif result.status_code == 401:
+            raise UnauthorizedException(result.content)
+        elif result.status_code == 400:
+            raise BadRequestException(result.content)
+        else:
+            raise Exception("Unknown Error return status %d: %s", result.status_code, result.content[0:100])
+
+    def _build_translation_object(self, json_object):
+        source_lang = json_object.get("source_language",None)
+        translation = json_object.get("translation",None)
+        status = json_object.get("status",None)
+
+        translators = [Translator.from_json(t) for t in json_object.get("translators",[])]
+
+        translation = Translation(
+            uid = json_object["uid"],
+            text = json_object["text"],
+            target_language = json_object.get('target_language', None),
+            source_language = json_object.get('source_language', None),
+            translatedText = json_object.get('translatedText', None),
+            status = json_object.get('status', None),
+            translators = translators,
+            topics = json_object.get('topics', None),
+            price = json_object.get('price', None),
+            balance = json_object.get('balance', None),
+            text_format = json_object.get('text_format', "text"),
+            origin = json_object.get('origin', None),
+            price_plan = json_object.get('price_plan', None),
+            client = json_object.get('client', None),
+        )
+        return translation
+
+    def _build_mt_translation_object(self, json_object):
+        source_lang = json_object.get("source_language",None)
+        translation = json_object.get("translation",None)
+        status = json_object.get("status",None)
+
+        translation = MTTranslation(
+            uid = json_object["uid"],
+            text = json_object["text"],
+            target_language = json_object.get('target_language', None),
+            source_language = json_object.get('source_language', None),
+            translatedText = json_object.get('translatedText', None),
+            status = json_object.get('status', None),
+            topics = json_object.get('topics', None),
+            text_format = json_object.get('text_format', "text"),
+            origin = json_object.get('origin', None),
+            client = json_object.get('client', None),
+        )
+        return translation
+
+    def _make_request(self, data):
+
+        #headers={'Authorization': 'ApiKey %s:%s'%(self.username,self.api_key),'content-type': 'application/json'}
+        if self.is_bulk:
+            f = requests.patch
+        else:
+            f = requests.post
+        result = f("%stranslation/"% self.api_url, headers=self.headers, data=json.dumps(data))
+        if result.status_code in (201, 202):
+            json_object = json.loads(result.content)
+            toret = None
+            if self.is_bulk:
+                toret = []
+                for obj in json_object['objects']:
+                    toret.append(self._build_translation_object(obj))
+            else:
+                toret = self._build_translation_object(json_object)
+            return toret
+        elif result.status_code == 401:
+            raise UnauthorizedException(result.content)
+        elif result.status_code == 400:
+            raise BadRequestException(result.content)
+        else:
+            raise Exception("Unknown Error return status %d: %s", result.status_code, result.content[0:100])
+
+    def start_bulk_transaction(self):
+        self.bulk_data = []
+        self.is_bulk = True
+
+    def _post_bulk(self):
+        data = {'objects' : self.bulk_data}
+        return self._make_request(data=data)
+
+    def post_bulk_translations(self, translations):
+        self.start_bulk_transaction()
+        for obj in translations:
+            obj = copy.deepcopy(obj)
+            text, target_language = obj['text'], obj['target_language']
+            del obj['text']
+            del obj['target_language']
+            self.post_translations(text, target_language, **obj)
+
+        return self._post_bulk()
+
+    def get_translations(self,status=None):
+        '''
+            Returns the translations requested by the user
+        '''
+        if status is not None:
+            result = self.api_call('translation/?status=%s'%status)
+        else:
+            result = self.api_call('translation/')
+        if result.status_code == 200:
+            translations_json = result.json()["objects"]
+            translations = [Translation(**tj) for tj in translations_json]
+        else:
+            log.critical('Error status when fetching translation from server: {}!'.format(
+                         result.status_code))
+            translations = []
+        return translations
+
+    def get_translation(self, uid):
+        '''
+            Returns a translation with the given id
+        '''
+        result = self.api_call('translation/{}/'.format(uid))
+        if result.status_code == 200:
+            translation = Translation(**json.loads(result.content))
+        else:
+            log.critical('Error status when fetching translation from server: {}!'.format(
+                         result.status_code))
+            raise ValueError(result.content)
+        return translation
+
+    def upgrade_mt_translation(self, uid, properties=None):
+        """
+        :param uid:
+        :param properties: This is suppose to be a dictionary with new
+        properties values to be replaced on the upgraded job
+        :return:
+        """
+        api_url = self.api_url
+        uri = 'mt_translation/{}/'.format(uid)
+        url = "{}{}".format(api_url, uri)
+        data = {"status": "upgrade", "properties": properties}
+        return requests.patch(url, headers=self.headers, data=json.dumps(data))
+
+    def get_mt_translations(self, status=None):
+        '''
+            Returns the translations requested by the user
+        '''
+        if status is not None:
+            result = self.api_call('mt_translation/?status=%s'%status)
+        else:
+            result = self.api_call('mt_translation/')
+        if result.status_code == 200:
+            translations_json = json.loads(result.content)["objects"]
+            translations = [Translation(**tj) for tj in translations_json]
+        else:
+            log.critical('Error status when fetching machine translation from server: {}!'.format(
+                         result.status_code))
+            translations = []
+        return translations
+
+    def get_mt_translation(self, uid):
+        '''
+            Returns a translation with the given id
+        '''
+        result = self.api_call('mt_translation/{}/'.format(uid))
+        if result.status_code == 200:
+            translation = Translation(**result.json())
+        else:
+            log.critical('Error status when fetching machine translation from server: {}!'.format(
+                         result.status_code))
+            raise ValueError(result.content)
+        return translation
+
+    def get_language_pairs(self, train_langs=None):
+        '''
+            Returns the language pairs available on unbabel
+        '''
+        if train_langs is None:
+            result = self.api_call('language_pair/')
+        else:
+            result = self.api_call(
+                'language_pair/?train_langs={}'.format(train_langs))
+        try:
+            langs_json = result.json()
+            if 'error' in langs_json:
+                return []
+            languages = [LangPair(Language(
+                shortname=lang_json["lang_pair"]["source_language"][
+                    "shortname"],
+                name=lang_json["lang_pair"]["source_language"]["name"]),
+                                  Language(shortname=lang_json["lang_pair"][
+                                      "target_language"]["shortname"],
+                                           name=lang_json["lang_pair"][
+                                               "target_language"]["name"])
+            ) for lang_json in langs_json["objects"]]
+        except Exception:
+            log.exception("Error decoding get language pairs")
+            raise e
+        return languages
+
+    def get_tones(self):
+        '''
+            Returns the tones available on unbabel
+        '''
+        result = self.api_call('tone/')
+        tones_json = json.loads(result.content)
+        tones = [Tone(name=tone_json["tone"]["name"],
+                      description=tone_json["tone"]["description"])
+                 for tone_json in tones_json["objects"]]
+        return tones
+
+    def get_topics(self):
+        '''
+            Returns the topics available on unbabel
+        '''
+        result = self.api_call('topic/')
+        topics_json = json.loads(result.content)
+        topics = [Topic(name=topic_json["topic"]["name"])
+                  for topic_json in topics_json["objects"]]
+        return topics
+
+    def get_account(self):
+        result = self.api_call('account/')
+        account_json = json.loads(result.content)
+        account_data = account_json['objects'][0]['account']
+        account = Account(**account_data)
+        return account
+
+    def get_word_count(self, text):
+        result = self.api_call('wordcount/', {"text": text})
+
+        if result.status_code == 201:
+            json_object = json.loads(result.content)
+            return json_object["word_count"]
+        else:
+            log.debug('Got a HTTP Error [{}]'.format(result.status_code))
+            raise Exception("Unknown Error")
+
+    def get_user(self):
+        result = self.api_call('app/user/', internal_api_call=True)
+
+        if result.status_code == 200:
+            return json.loads(result.content)
+        else:
+            log.debug('Got a HTTP Error [{}]'.format(result.status_code))
+            raise Exception("Unknown Error: %s" % result.status_code)
+
+
+__all__ = ['UnbabelApi']
